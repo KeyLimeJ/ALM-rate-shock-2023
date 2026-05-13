@@ -51,18 +51,26 @@ cp .env.example .env
 
 ### 3. Pull data
 
-FFIEC bulk ZIPs must be downloaded from the public-data portal (it requires a license click-through, not scriptable). The portal's "Four Periods" Call Reports product contains only RC, RI, and RC-N — not the securities, deposit, or capital schedules we need — so each quarter has to be pulled separately as a "Single Period" download.
+FFIEC bulk ZIPs need to be downloaded from the public-data portal (each one is behind a license click-through). The portal's "Four Periods" Call Reports product covers only RC / RI / RC-N — missing the securities, deposit, and capital schedules we need — so the only viable approach is one quarter per "Single Period" download. Two ways to do that:
 
-Workflow:
+**Option A: Automated (recommended).** A Playwright-based fetcher drives a headless Chromium through the FFIEC form for each quarter. One-time setup:
 
-1. Visit https://cdr.ffiec.gov/public/PWS/DownloadBulkData.aspx
-2. Select **"Call Reports — Single Period"**.
-3. Pick the reporting-period end date (quarter-end: 03/31, 06/30, 09/30, or 12/31).
-4. Choose format **"Tab Delimited"**.
-5. Click Download, accept the license, save the ZIP into `data/raw/`.
-6. Repeat for each quarter in your target window. For the full 2019Q1–2023Q1 series that's 17 quarters / 17 ZIPs (each ~7 MB). At ~30 seconds per download, ~8 minutes total.
+```bash
+uv pip install -e ".[fetch]"
+uv run playwright install chromium
+```
 
-The parser also supports multi-period bulk archives (it indexes ZIP contents by date token), so if FFIEC's product mix changes in the future you can drop combined ZIPs in `data/raw/` without renaming.
+Then to grab the full 2019Q1–2023Q1 series in one shot (~4 minutes):
+
+```bash
+uv run python -m scripts.fetch_ffiec --headless --from 2019Q1 --to 2023Q1
+```
+
+The fetcher is idempotent: it skips quarters whose ZIP already exists. It also writes screenshots + HTML dumps to `data/fetch_debug/` if anything fails so the breakage is debuggable.
+
+**Option B: Manual.** Visit https://cdr.ffiec.gov/public/PWS/DownloadBulkData.aspx, pick "Call Reports — Single Period", choose a quarter-end date, format "Tab Delimited", click Download, accept the license, save the ZIP into `data/raw/`. Repeat for each quarter. ~30 seconds each; ~8 minutes for 17 quarters.
+
+The parser supports multi-period bulk archives too (it indexes ZIP contents by date token), so if FFIEC's product mix changes you can drop combined ZIPs in `data/raw/` without renaming.
 
 Then:
 
