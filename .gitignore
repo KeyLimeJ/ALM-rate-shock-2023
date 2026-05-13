@@ -1,0 +1,39 @@
+# Secrets / local config
+.env
+.env.local
+.env.*.local
+
+# Raw downloads — pulled fresh by scripts, never committed
+data/raw/*
+!data/raw/.gitkeep
+
+# Generated / output artifacts
+data/processed/
+outputs/
+*.parquet
+!data/sample/**/*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# uv / venv
+.venv/
+venv/
+.python-version
+
+# Notebook clutter
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
