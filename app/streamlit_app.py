@@ -163,7 +163,7 @@ st.sidebar.markdown(
     "- [x] **M1** — data ingestion\n"
     "- [x] **M2** — repricing gap + NII shock\n"
     "- [x] **M3** — EVE + HTM unrealized-loss reconstruction\n"
-    "- [ ] M4 — full 2019–2023 time series\n"
+    "- [x] **M4** — time series (renders whatever quarters are loaded)\n"
     "- [ ] M5 — liquidity / HQLA / uninsured overlay\n"
     "- [ ] M6 — narrative polish + deploy\n"
 )
@@ -750,6 +750,203 @@ else:
             "static prepayment (no rate-dependent CPR), no loan-side EVE, no liability "
             "EVE on non-maturity deposits. See README's Limitations section."
         )
+
+
+# ---------------------------------------------------------------------------
+# M4 — Time series across all loaded quarters
+# ---------------------------------------------------------------------------
+st.markdown("---")
+st.header("M4 · Time series across the rate cycle")
+st.write(
+    "The charts below render whatever quarterly data is in your "
+    "`data/processed/ffiec_long.parquet`. As you drop additional FFIEC bulk "
+    "ZIPs into `data/raw/` and re-run `pull_ffiec`, this section fills out — "
+    "no code changes needed. The intended end-state is **2019Q1 through "
+    "2023Q1**, which spans the pre-Covid period, the ZIRP-era HTM buildup, "
+    "and the 2022 rate shock that broke SVB."
+)
+
+
+def _quarters_in_window(start_year: int = 2019, start_q: int = 1,
+                        end_year: int = 2023, end_q: int = 1) -> list[str]:
+    """All quarter labels in the closed window, e.g. '2019Q1' .. '2023Q1'."""
+    start_idx = start_year * 4 + (start_q - 1)
+    end_idx   = end_year   * 4 + (end_q   - 1)
+    return [f"{i // 4}Q{(i % 4) + 1}" for i in range(start_idx, end_idx + 1)]
+
+
+loaded_quarters = sorted(df["quarter"].unique())
+all_quarters_target = _quarters_in_window()
+missing = [q for q in all_quarters_target if q not in loaded_quarters]
+
+status_col1, status_col2 = st.columns([1, 2])
+with status_col1:
+    st.metric("Quarters loaded", f"{len(loaded_quarters)} / {len(all_quarters_target)}")
+with status_col2:
+    if missing:
+        st.info(
+            f"**Loaded:** {', '.join(loaded_quarters)}.  \n"
+            f"**Missing for 2019Q1–2023Q1:** {', '.join(missing)}. "
+            "Download each from the FFIEC bulk-data portal and drop into "
+            "`data/raw/`, then re-run "
+            "`uv run python -m scripts.pull_ffiec --quarter <Q>` for each."
+        )
+    else:
+        st.success("Full 2019Q1–2023Q1 series loaded.")
+
+
+# ===== Time-series metrics for each bank =====
+def time_series_frame() -> pd.DataFrame:
+    """Wide-format frame keyed on (bank, quarter) with the metrics we chart."""
+    records: list[dict] = []
+    for bank_key in ("svb", "hban"):
+        rssd = banks.get(bank_key).rssd_id
+        for q in loaded_quarters:
+            ta = get_val(bank_key, q, "total_assets")
+            htm = get_val(bank_key, q, "htm_amortized_cost_total")
+            htm_fv = get_val(bank_key, q, "htm_fair_value_total")
+            afs = get_val(bank_key, q, "afs_amortized_cost_total")
+            afs_fv = get_val(bank_key, q, "afs_fair_value_total")
+            tier1 = get_val(bank_key, q, "tier1_capital")
+            dep = get_val(bank_key, q, "total_deposits")
+            uninsured = get_val(bank_key, q, "estimated_uninsured_deposits")
+            nii = get_val(bank_key, q, "net_interest_income")
+            if None in (ta, htm, htm_fv, afs, afs_fv, tier1, dep, uninsured):
+                continue
+            records.append({
+                "bank": banks.get(bank_key).short_name,
+                "rssd_id": rssd,
+                "quarter": q,
+                "quarter_end": pd.Timestamp(
+                    year=int(q[:4]),
+                    month={"1": 3, "2": 6, "3": 9, "4": 12}[q[-1]],
+                    day=28,
+                ),
+                "total_assets_b": ta / 1e6,
+                "htm_pct_assets": htm / ta,
+                "unrealized_loss_b": ((htm - htm_fv) + (afs - afs_fv)) / 1e6,
+                "unrealized_loss_pct_t1": ((htm - htm_fv) + (afs - afs_fv)) / tier1,
+                "uninsured_pct": uninsured / dep,
+                "nii_ytd_b": (nii or 0) / 1e6,
+                "tier1_b": tier1 / 1e6,
+            })
+    return pd.DataFrame(records).sort_values(["bank", "quarter"])
+
+
+ts = time_series_frame()
+
+
+def line_panel(metric: str, title: str, ytick: str, hline: float | None = None,
+               hline_label: str = "") -> go.Figure:
+    fig = go.Figure()
+    for bank in ts["bank"].unique():
+        sub = ts[ts["bank"] == bank]
+        fig.add_scatter(
+            x=sub["quarter_end"],
+            y=sub[metric],
+            name=bank,
+            mode="lines+markers",
+            line=dict(color=BANK_COLORS.get(bank), width=2),
+            marker=dict(size=8),
+        )
+    if hline is not None:
+        fig.add_hline(y=hline, line_dash="dash", line_color="red",
+                      annotation_text=hline_label, annotation_position="top right")
+    fig.update_layout(
+        title=title,
+        yaxis_tickformat=ytick,
+        height=320,
+        margin=dict(t=50, b=30, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.25),
+    )
+    return fig
+
+
+if len(loaded_quarters) < 2:
+    st.warning(
+        "Only one quarter is loaded — time series charts will be flat. Add "
+        "more quarters to see the trajectory."
+    )
+else:
+    ts_a, ts_b = st.columns(2)
+    with ts_a:
+        st.plotly_chart(
+            line_panel("htm_pct_assets", "HTM as % of total assets", ".0%"),
+            use_container_width=True,
+        )
+        st.caption(
+            "When the HTM concentration line goes up, the bank is locking in "
+            "duration on the asset side. SVB's came up in 2020–21 and stayed "
+            "elevated; that's the choice that pre-determined the 2023 outcome."
+        )
+    with ts_b:
+        st.plotly_chart(
+            line_panel("unrealized_loss_pct_t1", "Combined unrealized loss / Tier 1",
+                       ".0%", hline=1.0, hline_label="Tier 1 wiped out"),
+            use_container_width=True,
+        )
+        st.caption(
+            "The dashed line is the regulatory-solvency threshold. SVB's line "
+            "crosses it as the 2022 rate shock works through the long-MBS book."
+        )
+
+    ts_c, ts_d = st.columns(2)
+    with ts_c:
+        st.plotly_chart(
+            line_panel("uninsured_pct", "Uninsured deposits as % of total deposits", ".0%"),
+            use_container_width=True,
+        )
+        st.caption(
+            "SVB's uninsured deposit share stays ~94% across every quarter — "
+            "the franchise was structurally bank-run-vulnerable long before "
+            "the run actually happened."
+        )
+    with ts_d:
+        st.plotly_chart(
+            line_panel("total_assets_b", "Total assets (USD billions)", ",.0f"),
+            use_container_width=True,
+        )
+        st.caption(
+            "Both banks grew through the ZIRP era. SVB's deposit base flooded "
+            "with VC dry powder; Huntington's growth came from the 2021 TCF "
+            "Financial acquisition. Same macro tailwind, different asset-side response."
+        )
+
+
+# ===== Rate-shock backdrop from FRED =====
+if fred_df is not None:
+    st.subheader("Rate-shock backdrop · Treasury curve evolution")
+    rate_panel = go.Figure()
+    for series_name, label, color in [
+        ("ust_2y",  "2-year",  "#3498db"),
+        ("ust_5y",  "5-year",  "#16a085"),
+        ("ust_10y", "10-year", "#c0392b"),
+        ("eff_fed_funds", "Effective Fed Funds", "#7f8c8d"),
+    ]:
+        sub_rate = fred_df[(fred_df["series"] == series_name)
+                           & (fred_df["value"].notna())].sort_values("date")
+        if sub_rate.empty:
+            continue
+        rate_panel.add_scatter(
+            x=sub_rate["date"],
+            y=sub_rate["value"],
+            name=label,
+            mode="lines",
+            line=dict(color=color, width=1.6),
+        )
+    rate_panel.update_layout(
+        title="Treasury yields and the Fed Funds rate over the rate cycle",
+        yaxis_title="Yield (%)",
+        height=360,
+        margin=dict(t=50, b=30, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.25),
+    )
+    st.plotly_chart(rate_panel, use_container_width=True)
+    st.caption(
+        "The 2-year yield went from ~0.1% in early 2021 to ~4.4% by end of 2022 — "
+        "the steepest tightening cycle since Volcker. The HTM book SVB built when "
+        "the blue line was at zero became un-sellable when it reached 4%."
+    )
 
 
 # ---------------------------------------------------------------------------
