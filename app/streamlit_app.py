@@ -30,6 +30,13 @@ from alm.models.eve import (
     reconstruct_portfolio,
     treasury_curve_on,
 )
+from alm.models.liquidity import (
+    DEFAULT_AFS_HAIRCUT,
+    DEFAULT_INSURED_OUTFLOW_RATE,
+    DEFAULT_UNINSURED_OUTFLOW_RATE,
+    components_for,
+    lcr_time_series,
+)
 from alm.models.nii_sensitivity import nii_12m_shock
 from alm.models.repricing_gap import (
     classify_balance_sheet,
@@ -163,8 +170,8 @@ st.sidebar.markdown(
     "- [x] **M1** — data ingestion\n"
     "- [x] **M2** — repricing gap + NII shock\n"
     "- [x] **M3** — EVE + HTM unrealized-loss reconstruction\n"
-    "- [x] **M4** — time series (renders whatever quarters are loaded)\n"
-    "- [ ] M5 — liquidity / HQLA / uninsured overlay\n"
+    "- [x] **M4** — time series across loaded quarters\n"
+    "- [x] **M5** — liquidity / HQLA / uninsured overlay\n"
     "- [ ] M6 — narrative polish + deploy\n"
 )
 st.sidebar.caption(
@@ -946,6 +953,252 @@ if fred_df is not None:
         "The 2-year yield went from ~0.1% in early 2021 to ~4.4% by end of 2022 — "
         "the steepest tightening cycle since Volcker. The HTM book SVB built when "
         "the blue line was at zero became un-sellable when it reached 4%."
+    )
+
+
+# ---------------------------------------------------------------------------
+# M5 — Liquidity / HQLA / uninsured-deposit overlay
+# ---------------------------------------------------------------------------
+st.markdown("---")
+st.header("M5 · Liquidity overlay — when HTM stops counting")
+st.write(
+    "The central liquidity claim: **HTM securities are not HQLA**. Under both "
+    "Basel III and US Reg WW, a bank cannot sell HTM holdings to meet "
+    "outflows without taint-rule risk that forces re-categorization of the "
+    "entire HTM book to AFS — recognizing every unrealized loss through AOCI. "
+    "That is exactly what SVB had to do on 8 March 2023, and it is the "
+    "moment that triggered the run. So the model strips HTM from HQLA and "
+    "asks: under stress, does the bank have enough cash + AFS to survive a "
+    "30-day deposit outflow?"
+)
+
+# ===== Outflow scenario controls =====
+liq_c1, liq_c2, liq_c3 = st.columns(3)
+with liq_c1:
+    insured_outflow_pct = st.slider(
+        "Insured deposit outflow rate (% over 30 days)",
+        0.0, 30.0,
+        DEFAULT_INSURED_OUTFLOW_RATE * 100,
+        step=0.5,
+        help="Basel III: ~3-10% for stable retail. Default 5%.",
+    )
+with liq_c2:
+    uninsured_outflow_pct = st.slider(
+        "Uninsured deposit outflow rate (% over 30 days)",
+        0.0, 100.0,
+        DEFAULT_UNINSURED_OUTFLOW_RATE * 100,
+        step=1.0,
+        help="Basel III: 25-40% for less-stable wholesale. SVB-style actual: ≥70%. Default 25%.",
+    )
+with liq_c3:
+    afs_haircut_pct = st.slider(
+        "AFS haircut (%)",
+        0.0, 25.0,
+        DEFAULT_AFS_HAIRCUT * 100,
+        step=0.5,
+        help="Basel III: Level 1 (Treasuries) = 0%, Level 2A (Agency MBS) = 15%. Default 8% blended.",
+    )
+insured_rate = insured_outflow_pct / 100.0
+uninsured_rate = uninsured_outflow_pct / 100.0
+afs_haircut = afs_haircut_pct / 100.0
+
+
+# ===== LCR time series =====
+@st.cache_data
+def _lcr_ts(rssd: int, ins_r: float, uns_r: float, afs_h: float) -> pd.DataFrame:
+    return lcr_time_series(df, rssd, ins_r, uns_r, afs_h)
+
+
+lcr_panels = {}
+for bank_key, bank_label in (("svb", "SVB"), ("hban", "Huntington")):
+    rssd = banks.get(bank_key).rssd_id
+    ts = _lcr_ts(rssd, insured_rate, uninsured_rate, afs_haircut)
+    ts["quarter_end"] = pd.to_datetime([
+        f"{q[:4]}-{ {'1':'03-31','2':'06-30','3':'09-30','4':'12-31'}[q[-1]] }"
+        for q in ts["quarter"]
+    ])
+    lcr_panels[bank_label] = ts
+
+
+# Headline metrics for current quarter (use the last loaded quarter per bank)
+metric_cols = st.columns(2)
+for col, (bank_label, ts) in zip(metric_cols, lcr_panels.items(), strict=True):
+    if ts.empty:
+        col.warning(f"No data for {bank_label}.")
+        continue
+    latest = ts.iloc[-1]
+    col.markdown(f"### {bank_label} — latest reported quarter ({latest['quarter']})")
+    sub_cols = col.columns(4)
+    sub_cols[0].metric("HQLA", f"${latest['hqla']/1e6:,.1f}B")
+    sub_cols[1].metric("30-day outflows", f"${latest['outflows_30d']/1e6:,.1f}B")
+    lcr_pct = latest["lcr"] * 100 if latest["lcr"] != float("inf") else float("nan")
+    col.markdown("")
+    col.metric(
+        "Simplified LCR",
+        f"{lcr_pct:.0f}%",
+        delta=("above 100%" if lcr_pct >= 100 else "below 100%"),
+        delta_color=("normal" if lcr_pct >= 100 else "inverse"),
+    )
+    breakeven_pct = latest["breakeven_uninsured_outflow"] * 100
+    col.metric(
+        "Breakeven uninsured outflow",
+        f"{breakeven_pct:.1f}%",
+        help="The uninsured-deposit outflow rate at which LCR would equal 100%, "
+             "holding the insured rate and AFS haircut at the slider values.",
+    )
+
+
+# LCR time series chart
+fig_lcr = go.Figure()
+for bank_label, ts in lcr_panels.items():
+    fig_lcr.add_scatter(
+        x=ts["quarter_end"],
+        y=ts["lcr"] * 100,
+        name=bank_label,
+        mode="lines+markers",
+        line=dict(color=BANK_COLORS.get(bank_label), width=2),
+        marker=dict(size=8),
+    )
+fig_lcr.add_hline(
+    y=100, line_dash="dash", line_color="red",
+    annotation_text="100% — LCR threshold",
+    annotation_position="top right",
+)
+fig_lcr.update_layout(
+    title=(f"Simplified LCR over the rate cycle "
+           f"(insured outflow {insured_outflow_pct:.1f}%, "
+           f"uninsured outflow {uninsured_outflow_pct:.1f}%, "
+           f"AFS haircut {afs_haircut_pct:.1f}%)"),
+    yaxis_title="LCR (%)",
+    height=420,
+    margin=dict(t=50, b=30, l=10, r=10),
+    legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+)
+st.plotly_chart(fig_lcr, use_container_width=True)
+st.caption(
+    "SVB's last Call Report is 2022Q4 — RSSD 802866 vanishes from the "
+    "regulatory record after the FDIC seized the bank on 10 March 2023. "
+    "Look at where SVB's line was sitting in the year *before* the run: "
+    "essentially riding the 100% threshold at default outflow assumptions. "
+    "Dial uninsured outflow up to 70% (the rate that materialized in early "
+    "March) and SVB's line drops well below Huntington's at every quarter."
+)
+
+
+# Breakeven outflow chart — the headline
+st.subheader("How much uninsured outflow can each bank actually absorb?")
+st.write(
+    "The chart below shows, for each quarter, the uninsured-deposit outflow "
+    "rate at which LCR would equal 100% (holding the slider values). It is "
+    "the bank's *liquidity headroom* expressed in deposit-runoff terms. "
+    "A line near the 25% Basel III baseline means the bank can absorb only a "
+    "regulator-baseline stress. A line near 80%+ means it could survive an "
+    "SVB-style flash run."
+)
+fig_break = go.Figure()
+for bank_label, ts in lcr_panels.items():
+    fig_break.add_scatter(
+        x=ts["quarter_end"],
+        y=ts["breakeven_uninsured_outflow"] * 100,
+        name=bank_label,
+        mode="lines+markers",
+        line=dict(color=BANK_COLORS.get(bank_label), width=2),
+        marker=dict(size=8),
+    )
+fig_break.add_hline(y=25, line_dash="dot", line_color="#7f8c8d",
+                    annotation_text="Basel III baseline (~25%)",
+                    annotation_position="top left")
+fig_break.add_hline(y=70, line_dash="dot", line_color="#c0392b",
+                    annotation_text="SVB-style flash run (~70%)",
+                    annotation_position="top right")
+fig_break.update_layout(
+    title="Breakeven uninsured outflow rate by quarter",
+    yaxis_title="Outflow rate (%)",
+    height=400,
+    margin=dict(t=50, b=30, l=10, r=10),
+    legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+)
+st.plotly_chart(fig_break, use_container_width=True)
+st.caption(
+    "Across 2022, SVB's line hovered around 22-25% — the bank was structurally "
+    "incapable of absorbing more than a Basel III baseline uninsured stress. "
+    "Huntington's line is in the 26-53% range, with a sharp jump in 2023Q1 as "
+    "their cash position grew and total deposits shrank slightly. **This is "
+    "the single most direct view of the SVB liquidity story**: same balance "
+    "sheet weight class, very different stress capacity."
+)
+
+
+# HQLA composition for the latest quarter
+st.subheader("HQLA composition — where each bank's liquidity actually sits")
+hqla_rows = []
+for bank_key, bank_label in (("svb", "SVB"), ("hban", "Huntington")):
+    rssd = banks.get(bank_key).rssd_id
+    last_q = lcr_panels[bank_label]["quarter"].iloc[-1] if not lcr_panels[bank_label].empty else None
+    if last_q is None:
+        continue
+    c = components_for(df, rssd, last_q)
+    hqla_rows.append({
+        "bank": f"{bank_label} ({last_q})",
+        "Cash": c.cash / 1e6,
+        "AFS (haircut-adjusted)": (1 - afs_haircut) * c.afs_fair_value / 1e6,
+        "HTM (excluded from HQLA)": c.htm_amortized_cost / 1e6,
+    })
+hqla_long = (pd.DataFrame(hqla_rows)
+             .melt(id_vars="bank", var_name="bucket", value_name="value_b"))
+fig_hqla = go.Figure()
+color_map = {
+    "Cash": "#2c3e50",
+    "AFS (haircut-adjusted)": "#16a085",
+    "HTM (excluded from HQLA)": "#c0392b",
+}
+for bucket in ("Cash", "AFS (haircut-adjusted)", "HTM (excluded from HQLA)"):
+    sub = hqla_long[hqla_long["bucket"] == bucket]
+    fig_hqla.add_bar(
+        name=bucket,
+        x=sub["bank"],
+        y=sub["value_b"],
+        marker_color=color_map[bucket],
+    )
+fig_hqla.update_layout(
+    title="Cash, AFS, and the HTM dark mass",
+    barmode="stack",
+    yaxis_title="USD billions",
+    height=400,
+    margin=dict(t=50, b=30, l=10, r=10),
+    legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+)
+st.plotly_chart(fig_hqla, use_container_width=True)
+st.caption(
+    "Red is HTM — the part of the balance sheet that *looks* liquid in normal "
+    "times but is locked away from any actual stress event. SVB's red column "
+    "is roughly the same size as Huntington's entire balance sheet, but it "
+    "contributes zero HQLA. Cash + AFS is the operative liquidity buffer."
+)
+
+with st.expander("Methodology · what this simplified LCR does and doesn't do"):
+    st.markdown(
+        "**Scope.** Securities + cash + deposits only. Skips wholesale funding, "
+        "FHLB advances, repo, and the full Basel III outflow categorization "
+        "(operational deposits, secured funding, commitments, etc.).\n\n"
+        "**Central modeling claim.** HTM securities are excluded from HQLA. "
+        "Under both Basel III and US Reg WW, selling HTM triggers an accounting "
+        "taint rule that forces the entire HTM portfolio to AFS, immediately "
+        "marking all unrealized losses through AOCI. SVB triggered exactly "
+        "this on 8 March 2023.\n\n"
+        "**Configurable parameters.** Insured & uninsured deposit outflow "
+        "rates, AFS haircut. All exposed as sliders. Defaults track Basel III "
+        "baseline; the SVB-actual case corresponds to uninsured outflow ≥ 70%.\n\n"
+        "**Insured / uninsured split.** Computed as "
+        "`total_deposits − estimated_uninsured_deposits` (RC-O Memo 2). For "
+        "tech-concentrated franchises like SVB this proxy understates outflow "
+        "risk because even some technically-insured accounts behaved as "
+        "uninsured under stress.\n\n"
+        "**Not a regulatory LCR.** This is a directionally-correct illustrative "
+        "model. The full Reg WW LCR includes ~30 outflow categories, "
+        "operational-vs-non-operational deposit treatment, inflow caps, and "
+        "intra-period peak constraints. The point here is the SVB story, not "
+        "the regulatory math."
     )
 
 
