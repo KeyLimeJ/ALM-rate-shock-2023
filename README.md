@@ -51,22 +51,18 @@ cp .env.example .env
 
 ### 3. Pull data
 
-FFIEC bulk ZIPs must be downloaded from the public-data portal (it requires a license click-through, not scriptable). The portal offers two relevant report types:
+FFIEC bulk ZIPs must be downloaded from the public-data portal (it requires a license click-through, not scriptable). The portal's "Four Periods" Call Reports product contains only RC, RI, and RC-N — not the securities, deposit, or capital schedules we need — so each quarter has to be pulled separately as a "Single Period" download.
 
-- **Single Period** — one quarter per ZIP. Fine for 1-2 quarters.
-- **Five Periods** — five consecutive quarters per ZIP. Use this if you want a multi-quarter time series; **four downloads cover the full 2019Q1–2023Q1 window**.
-
-Workflow for the full timeline (recommended):
+Workflow:
 
 1. Visit https://cdr.ffiec.gov/public/PWS/DownloadBulkData.aspx
-2. Pick **"Call Reports -- Five Periods"**.
-3. Pick format **"Tab Delimited"**.
-4. Download for each of these end-dates (each gives you that quarter + the four prior):
-   - **03/31/2023** → covers 2022Q1, 2022Q2, 2022Q3, 2022Q4, 2023Q1
-   - **03/31/2022** → covers 2021Q1–2022Q1
-   - **03/31/2021** → covers 2020Q1–2021Q1
-   - **03/31/2020** → covers 2019Q1–2020Q1
-5. Drop all four ZIPs into `data/raw/`. The parser looks inside each ZIP and routes quarters automatically — no renaming needed.
+2. Select **"Call Reports — Single Period"**.
+3. Pick the reporting-period end date (quarter-end: 03/31, 06/30, 09/30, or 12/31).
+4. Choose format **"Tab Delimited"**.
+5. Click Download, accept the license, save the ZIP into `data/raw/`.
+6. Repeat for each quarter in your target window. For the full 2019Q1–2023Q1 series that's 17 quarters / 17 ZIPs (each ~7 MB). At ~30 seconds per download, ~8 minutes total.
+
+The parser also supports multi-period bulk archives (it indexes ZIP contents by date token), so if FFIEC's product mix changes in the future you can drop combined ZIPs in `data/raw/` without renaming.
 
 Then:
 
