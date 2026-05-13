@@ -16,7 +16,16 @@ Run locally::
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+# Make the local `alm` package importable when this script is run directly
+# (e.g., on Streamlit Community Cloud, which doesn't install the project from
+# pyproject.toml). `src/alm/...` -> we add the `src/` directory to sys.path.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SRC_DIR = _REPO_ROOT / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
 import pandas as pd
 import plotly.graph_objects as go
