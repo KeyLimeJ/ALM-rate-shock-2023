@@ -22,6 +22,12 @@ import streamlit as st
 
 from alm.config import PATHS
 from alm.data import banks
+from alm.models.nii_sensitivity import nii_12m_shock
+from alm.models.repricing_gap import (
+    classify_balance_sheet,
+    compute_gap,
+    nmd_balance,
+)
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -141,8 +147,8 @@ quarter = st.sidebar.selectbox("Reporting period", available_quarters)
 st.sidebar.markdown("---")
 st.sidebar.markdown(
     "**Milestone status**\n\n"
-    "- [x] **M1** — data ingestion *(this page)*\n"
-    "- [ ] M2 — repricing gap + NII shock\n"
+    "- [x] **M1** — data ingestion\n"
+    "- [x] **M2** — repricing gap + NII shock\n"
     "- [ ] M3 — EVE + HTM unrealized-loss reconstruction\n"
     "- [ ] M4 — full 2019–2023 time series\n"
     "- [ ] M5 — liquidity / HQLA / uninsured overlay\n"
@@ -297,6 +303,184 @@ with c4:
         "deposit base became simultaneously flighty and beta-sensitive: the "
         "two failure modes amplified each other."
     )
+
+
+# ---------------------------------------------------------------------------
+# M2 — Repricing gap and 12-month NII sensitivity
+# ---------------------------------------------------------------------------
+st.markdown("---")
+st.header("M2 · Repricing gap and NII shock sensitivity")
+st.write(
+    "The repricing gap is the regulator-friendly view of a bank's interest-rate risk: "
+    "for each time band, how much in rate-sensitive assets (RSA) reprices vs. "
+    "rate-sensitive liabilities (RSL). A positive gap is asset-sensitive (NII rises "
+    "with rates); a negative gap is liability-sensitive. "
+    "**The story for both these banks lives in the deposit-beta assumption**, "
+    "applied to non-maturity deposits (NMDs — transaction + savings accounts) — try the slider below."
+)
+
+
+# Pick which bank's gap to show (defaults to SVB — the story)
+gap_col_a, gap_col_b = st.columns([1, 3])
+with gap_col_a:
+    selected_bank_label = st.radio(
+        "Bank",
+        ["Silicon Valley Bank", "The Huntington National Bank"],
+        index=0,
+    )
+selected_bank_key = "svb" if selected_bank_label.startswith("Silicon") else "hban"
+selected_rssd = banks.get(selected_bank_key).rssd_id
+
+
+@st.cache_data
+def cached_gap(rssd: int, q: str) -> pd.DataFrame:
+    cls = classify_balance_sheet(df, rssd, q)
+    return compute_gap(cls)
+
+
+@st.cache_data
+def cached_nmd(rssd: int, q: str) -> float:
+    return nmd_balance(df, rssd, q)
+
+
+@st.cache_data
+def cached_nii_baseline(rssd: int, q: str) -> float:
+    rows = df[(df["rssd_id"] == rssd) & (df["quarter"] == q) & (df["field"] == "net_interest_income")]
+    return float(rows["value"].iloc[0]) if not rows.empty else float("nan")
+
+
+gap_df = cached_gap(selected_rssd, quarter)
+nmd_bal = cached_nmd(selected_rssd, quarter)
+nii_base = cached_nii_baseline(selected_rssd, quarter)
+
+
+# ===== Gap bar chart with cumulative line =====
+def gap_chart(gap_df: pd.DataFrame, bank_label: str) -> go.Figure:
+    """Per-bucket gap bars (positive = asset-sensitive) with cumulative gap line."""
+    fig = go.Figure()
+    fig.add_bar(
+        name="Gap (RSA − RSL)",
+        x=gap_df["label"],
+        y=gap_df["gap"] / 1e6,           # $thousands → $billions
+        marker_color=["#2c3e50" if v >= 0 else "#c0392b" for v in gap_df["gap"]],
+    )
+    fig.add_scatter(
+        name="Cumulative gap",
+        x=gap_df["label"],
+        y=gap_df["cum_gap"] / 1e6,
+        mode="lines+markers",
+        line=dict(color="#e67e22", width=2),
+        yaxis="y2",
+    )
+    fig.update_layout(
+        title=f"{bank_label} · repricing gap by time band ({quarter})",
+        yaxis=dict(title="Per-bucket gap (USD billions)"),
+        yaxis2=dict(title="Cumulative gap (USD billions)", overlaying="y", side="right"),
+        height=420,
+        margin=dict(t=50, b=30, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+    )
+    return fig
+
+
+with gap_col_b:
+    st.plotly_chart(gap_chart(gap_df, selected_bank_label), use_container_width=True)
+
+st.caption(
+    "Both banks are heavily asset-sensitive in the ≤3-month bucket — driven by "
+    "floating-rate commercial loans and cash that reprice immediately. The "
+    "positive gap looks like a tailwind in rising rates. **It is, only as long "
+    "as the bank doesn't have to compete to keep its NMD funding.**"
+)
+
+
+# ===== Interactive NII shock =====
+st.subheader("Interactive: how does the deposit beta change the answer?")
+st.write(
+    "Move the sliders. ΔNII is the change in 12-month net interest income under "
+    "a parallel rate shock, time-weighted by bucket midpoint, with the deposit "
+    "beta applied to non-maturity deposits (transaction + savings)."
+)
+
+slider_col1, slider_col2, slider_col3 = st.columns(3)
+with slider_col1:
+    shock = st.slider("Parallel rate shock (basis points)", -300, 400, 200, step=25)
+with slider_col2:
+    beta = st.slider("Deposit beta (NMDs)", 0.0, 1.0, 0.5, step=0.05)
+with slider_col3:
+    horizon = st.select_slider(
+        "NII horizon (months)",
+        options=[3, 6, 12, 24],
+        value=12,
+    )
+
+result = nii_12m_shock(
+    gap_df=gap_df,
+    shock_bps=shock,
+    nmd_balance=nmd_bal,
+    nmd_beta=beta,
+    horizon_months=float(horizon),
+)
+delta_nii = result["delta_nii"]
+pct_baseline = delta_nii / nii_base if nii_base else float("nan")
+
+result_cols = st.columns(4)
+result_cols[0].metric(
+    f"ΔNII ({horizon}m)",
+    f"${delta_nii/1e6:+,.2f}B",
+    f"{pct_baseline:+.1%} of baseline" if nii_base else "—",
+)
+result_cols[1].metric(
+    "Asset-side rate pickup",
+    f"${result['asset_contribution']/1e6:+,.2f}B",
+)
+result_cols[2].metric(
+    "Time-deposit expense",
+    f"${-result['liability_td_contribution']/1e6:+,.2f}B",
+)
+result_cols[3].metric(
+    "NMD expense (β-applied)",
+    f"${-result['nmd_contribution']/1e6:+,.2f}B",
+)
+
+
+# ===== Three-beta comparison =====
+st.subheader("The same balance sheet, three deposit-beta worlds (+200 bps shock)")
+
+beta_scenarios = [
+    (0.30, "Low beta", "Retail-sticky franchise (pre-2022 norm)"),
+    (0.50, "Mid beta", "Mixed franchise"),
+    (0.70, "High beta", "Uninsured / institutional / tech-concentrated"),
+]
+fig_b = go.Figure()
+labels: list[str] = []
+deltas: list[float] = []
+colors: list[str] = []
+for b_val, b_label, _ in beta_scenarios:
+    res = nii_12m_shock(gap_df, 200, nmd_bal, b_val)
+    labels.append(f"{b_label} (β={b_val:.2f})")
+    deltas.append(res["delta_nii"] / 1e6)
+    colors.append("#27ae60" if res["delta_nii"] >= 0 else "#c0392b")
+
+fig_b.add_bar(x=labels, y=deltas, marker_color=colors,
+              text=[f"${d:+.2f}B" for d in deltas], textposition="outside")
+fig_b.update_layout(
+    title=f"{selected_bank_label} · 12-month ΔNII under +200 bps shock, by deposit beta",
+    yaxis_title="ΔNII (USD billions, pre-tax)",
+    height=400,
+    margin=dict(t=50, b=30, l=10, r=10),
+    showlegend=False,
+)
+st.plotly_chart(fig_b, use_container_width=True)
+
+st.caption(
+    "Same balance sheet, same shock. Move from β=0.30 to β=0.70 and the bank's "
+    "interest-rate posture flips from asset-sensitive to deeply liability-sensitive. "
+    "**This is the single most important sensitivity in ALM.** SVB's pre-2022 "
+    "modeling assumed a low beta consistent with retail-sticky deposit franchises; "
+    "their actual deposit base — uninsured, institutional, tech-concentrated — "
+    "behaved like a β closer to 0.7."
+)
 
 
 # ---------------------------------------------------------------------------

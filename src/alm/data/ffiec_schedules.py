@@ -85,23 +85,87 @@ FIELDS_RC: dict[str, str] = {
 
 # Schedule RC-B — Securities (HTM amortized cost + fair value, AFS amortized + fair)
 # Critical for HTM unrealized loss reconstruction.
+#
+# Memorandum item 2 reports debt-securities portfolio by remaining maturity or
+# next repricing date, with three sub-categories:
+#   M2.a  Securities issued by US Treasury, US Government agencies, and states
+#         and political subdivisions (A549–A554) — 6 maturity buckets.
+#   M2.b  Mortgage pass-through securities (A555–A560) — 6 maturity buckets.
+#         Note: shown by *contractual* maturity, not expected average life.
+#         Static-gap convention; prepayment is modeled in M3 EVE separately.
+#   M2.c  Other mortgage-backed securities, CMOs / REMICs (A561–A562) — 2
+#         buckets by *expected average life* (≤3Y, >3Y).
 FIELDS_RCB: dict[str, str] = {
-    # Totals (HTM amortized cost and fair value across all security types)
+    # Totals
     "1754": "htm_amortized_cost_total",
     "1771": "htm_fair_value_total",
     "1772": "afs_amortized_cost_total",
     "1773": "afs_fair_value_total",
+    # M2.a — Treasuries / Agencies / Munis by remaining maturity
+    "A549": "secs_treasury_le_3m",
+    "A550": "secs_treasury_3m_12m",
+    "A551": "secs_treasury_1y_3y",
+    "A552": "secs_treasury_3y_5y",
+    "A553": "secs_treasury_5y_15y",
+    "A554": "secs_treasury_gt_15y",
+    # M2.b — MBS pass-throughs by remaining maturity (NOT expected average life)
+    "A555": "secs_mbs_passthrough_le_3m",
+    "A556": "secs_mbs_passthrough_3m_12m",
+    "A557": "secs_mbs_passthrough_1y_3y",
+    "A558": "secs_mbs_passthrough_3y_5y",
+    "A559": "secs_mbs_passthrough_5y_15y",
+    "A560": "secs_mbs_passthrough_gt_15y",
+    # M2.c — CMOs / other MBS by expected average life
+    "A561": "secs_cmo_other_wal_le_3y",
+    "A562": "secs_cmo_other_wal_gt_3y",
 }
 
 # Schedule RC-E — Deposits
 # The deposit-insurance threshold moved from $100k to $250k in 2008 (Emergency
 # Economic Stabilization Act, made permanent by Dodd-Frank). Time-deposit
 # bucket codes were renumbered accordingly: J473 / J474 replaced 6648 / 2604.
+#
+# Memorandum 3 reports time-deposit maturity buckets, separately for time
+# deposits of $250k or more (HK07-HK10) and less than $250k (HK12-HK15). Four
+# buckets each: ≤3M, 3M-12M, 1Y-3Y, >3Y. (HK11 is intentionally skipped in the
+# FFIEC form.)
 FIELDS_RCE: dict[str, str] = {
+    # Totals
     "2215": "transaction_accounts_total",
     "2385": "nontransaction_savings_total",
     "J473": "time_deposits_less_250k",
     "J474": "time_deposits_250k_plus",
+    # M3 — time deposits ≥ $250k by remaining maturity
+    "HK07": "td_ge250k_le_3m",
+    "HK08": "td_ge250k_3m_12m",
+    "HK09": "td_ge250k_1y_3y",
+    "HK10": "td_ge250k_gt_3y",
+    # M3 — time deposits < $250k by remaining maturity
+    "HK12": "td_lt250k_le_3m",
+    "HK13": "td_lt250k_3m_12m",
+    "HK14": "td_lt250k_1y_3y",
+    "HK15": "td_lt250k_gt_3y",
+}
+
+# Schedule RC-C (Part I) — Loans and Leases
+# Memorandum 2 reports loans by remaining maturity OR next repricing date,
+# split into two categories (closed-end 1-4 family residential mortgages and
+# all other loans) × six maturity buckets each.
+FIELDS_RCC: dict[str, str] = {
+    # M2.a — Closed-end 1-4 family residential mortgages by remaining maturity
+    "A564": "loans_1to4fam_le_3m",
+    "A565": "loans_1to4fam_3m_12m",
+    "A566": "loans_1to4fam_1y_3y",
+    "A567": "loans_1to4fam_3y_5y",
+    "A568": "loans_1to4fam_5y_15y",
+    "A569": "loans_1to4fam_gt_15y",
+    # M2.b — All other loans by remaining maturity
+    "A570": "loans_other_le_3m",
+    "A571": "loans_other_3m_12m",
+    "A572": "loans_other_1y_3y",
+    "A573": "loans_other_3y_5y",
+    "A574": "loans_other_5y_15y",
+    "A575": "loans_other_gt_15y",
 }
 
 # Schedule RC-O — Deposit insurance / uninsured deposits
@@ -132,6 +196,7 @@ FIELDS_RI: dict[str, str] = {
 SCHEDULE_FIELDS: dict[str, dict[str, str]] = {
     "RC":   FIELDS_RC,
     "RC-B": FIELDS_RCB,
+    "RC-C": FIELDS_RCC,
     "RC-E": FIELDS_RCE,
     "RC-O": FIELDS_RCO,
     "RC-R": FIELDS_RCR,
