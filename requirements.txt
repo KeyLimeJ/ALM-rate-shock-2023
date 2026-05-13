@@ -1,0 +1,15 @@
+# Streamlit Community Cloud reads this file when uv/pyproject isn't supported.
+# Keep in sync with the [project] and [project.optional-dependencies] groups
+# in pyproject.toml. The local development workflow uses uv + pyproject;
+# this file is purely for the Streamlit Cloud deployment.
+pandas>=2.2
+numpy>=1.26
+scipy>=1.13
+requests>=2.32
+python-dotenv>=1.0
+pyarrow>=16.0
+click>=8.1
+tqdm>=4.66
+streamlit>=1.36
+plotly>=5.22
+matplotlib>=3.9

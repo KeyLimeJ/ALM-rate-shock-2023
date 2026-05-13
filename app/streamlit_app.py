@@ -16,6 +16,8 @@ Run locally::
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -67,20 +69,38 @@ def _load_data_cached(_path: str, _mtime: float) -> pd.DataFrame:
     return df
 
 
-def load_data() -> pd.DataFrame | None:
-    path = PATHS.processed / "ffiec_long.parquet"
-    if not path.exists():
-        return None
-    return _load_data_cached(str(path), path.stat().st_mtime)
+def _resolve_parquet(name: str) -> tuple[Path | None, bool]:
+    """Return (path, is_sample). Prefers data/processed/ then falls back to data/sample/."""
+    fresh = PATHS.processed / name
+    if fresh.exists():
+        return fresh, False
+    sample = PATHS.sample / name
+    if sample.exists():
+        return sample, True
+    return None, False
 
 
-df = load_data()
+def load_data() -> tuple[pd.DataFrame | None, bool]:
+    """Load the FFIEC long-format parquet. Returns (frame, is_sample_data)."""
+    path, is_sample = _resolve_parquet("ffiec_long.parquet")
+    if path is None:
+        return None, False
+    return _load_data_cached(str(path), path.stat().st_mtime), is_sample
+
+
+df, is_sample = load_data()
 if df is None:
     st.error(
-        "**No data found.** Expected `data/processed/ffiec_long.parquet`.\n\n"
-        "Drop the FFIEC bulk Call Report ZIP for the period you want into "
-        "`data/raw/`, then run:\n\n"
-        "```\nuv run python -m scripts.pull_ffiec --quarter 2022Q4\n```"
+        "**No data found.** Expected `data/processed/ffiec_long.parquet` or "
+        "`data/sample/ffiec_long.parquet`.\n\n"
+        "Either commit sample data (already done in the repo by default) or pull "
+        "fresh data with:\n\n"
+        "```\n"
+        "uv pip install -e \".[fetch]\"\n"
+        "uv run playwright install chromium\n"
+        "uv run python -m scripts.fetch_ffiec --headless --from 2019Q1 --to 2023Q1\n"
+        "uv run python -m scripts.pull_ffiec --quarter 2019Q1 --quarter 2019Q2 ...\n"
+        "```"
     )
     st.stop()
 
@@ -166,13 +186,19 @@ available_quarters = sorted(df["quarter"].unique(), reverse=True)
 quarter = st.sidebar.selectbox("Reporting period", available_quarters)
 st.sidebar.markdown("---")
 st.sidebar.markdown(
-    "**Milestone status**\n\n"
+    "**Milestones**\n\n"
     "- [x] **M1** — data ingestion\n"
     "- [x] **M2** — repricing gap + NII shock\n"
     "- [x] **M3** — EVE + HTM unrealized-loss reconstruction\n"
     "- [x] **M4** — time series across loaded quarters\n"
     "- [x] **M5** — liquidity / HQLA / uninsured overlay\n"
-    "- [ ] M6 — narrative polish + deploy\n"
+    "- [x] **M6** — narrative polish + deploy\n"
+)
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    "**Built by** [Jared Limon](#about)  \n"
+    "Senior risk management leader,  \n"
+    "15+ years in credit risk, market making, and quantitative risk strategy."
 )
 st.sidebar.caption(
     "Numbers reconcile to each bank's 10-K within rounding. Source: FFIEC "
@@ -184,16 +210,37 @@ st.sidebar.caption(
 # Main
 # ---------------------------------------------------------------------------
 st.title("Casualty vs. Survivor")
-st.subheader("SVB and Huntington National Bank through the 2022–2023 rate shock")
-st.write(
-    f"**Reporting period: {quarter}.** Numbers below are pulled directly from "
-    "each bank's FFIEC Call Report (Schedules RC, RC-B, RC-E, RC-O, RC-R, RI) "
-    "and reconcile to the corresponding 10-K within rounding. This is the M1 "
-    "cut — the repricing-gap, NII, EVE, and liquidity overlays will appear "
-    "here as later milestones land."
+st.subheader("Silicon Valley Bank and Huntington National Bank through the 2022–2023 rate shock")
+
+if is_sample:
+    st.info(
+        "📦 You are viewing the committed sample dataset (full 2019Q1–2023Q1 series). "
+        "To re-pull fresh data: `uv run python -m scripts.fetch_ffiec --headless --from 2019Q1 --to 2023Q1` "
+        "then `uv run python -m scripts.pull_ffiec --quarter ...` for each quarter."
+    )
+
+st.markdown(
+    "**Headline finding.** Mark-to-market, SVB's combined HTM + AFS unrealized loss "
+    "exceeded its entire Tier 1 capital base by Q4 2022 — three months before the FDIC "
+    "seized the bank. A simplified LCR model says SVB's liquidity headroom across all "
+    "of 2022 was just **23–25% uninsured-deposit runoff**, the Basel III baseline. "
+    "On 9 March 2023, ~25% of deposits left in a single day. **The Call Report data "
+    "shown on this page knew, a full quarter before the FDIC did.**\n\n"
+    "Huntington National Bank — comparable in size ($173–188B vs SVB's $208–217B), "
+    "comparable in business mix, but with a sticky retail-led deposit franchise and a "
+    "modest HTM allocation — would have absorbed an SVB-scale shock with capital and "
+    "liquidity to spare. **Same regulatory environment, same rate cycle, opposite ALM "
+    "choices, opposite outcomes.**"
 )
 
 st.markdown("---")
+
+st.write(
+    f"**Snapshot below: {quarter}.** Numbers pulled directly from each bank's FFIEC "
+    "Call Report (Schedules RC, RC-B, RC-C, RC-E, RC-O, RC-R, RI) and reconcile to "
+    "the corresponding 10-K within rounding. Use the **reporting period** selector in "
+    "the sidebar to walk the timeline."
+)
 
 col_svb, col_hban = st.columns(2)
 with col_svb:
@@ -525,8 +572,8 @@ def _load_fred_cached(_path: str, _mtime: float) -> pd.DataFrame:
 
 
 def load_fred() -> pd.DataFrame | None:
-    path = PATHS.processed / "fred_macro.parquet"
-    if not path.exists():
+    path, _ = _resolve_parquet("fred_macro.parquet")
+    if path is None:
         return None
     return _load_fred_cached(str(path), path.stat().st_mtime)
 
@@ -1203,13 +1250,44 @@ with st.expander("Methodology · what this simplified LCR does and doesn't do"):
 
 
 # ---------------------------------------------------------------------------
-# Footer
+# About + Footer
 # ---------------------------------------------------------------------------
 st.markdown("---")
+st.header("About this project")
+
+about_left, about_right = st.columns([2, 1])
+with about_left:
+    st.markdown(
+        "**Built by Jared Limon** as a portfolio project for senior risk leadership "
+        "and quantitative strategy roles in financial services.\n\n"
+        "**Prior roles:** Principal Risk Architect at Bosonic Digital (institutional FX "
+        "market making, A/B book, cross-custodian netting); Lead Credit Risk Analyst at "
+        "Tosh (ML-driven credit scoring, PD/LGD forecasting); Senior Risk Management "
+        "Analyst at IBFX / TradeStation ($1.2T institutional FX flow, A/B book "
+        "methodology, ALM principles applied to broker book operations).\n\n"
+        "**This project demonstrates:** end-to-end ALM modeling (repricing gap, NII "
+        "sensitivity, EVE shock grid, simplified LCR), reproducible data ingestion "
+        "from public sources (FFIEC Call Report bulk data, FRED), explicit and "
+        "configurable modeling assumptions, and validation against published 10-K "
+        "figures — built around a defensible postmortem narrative of the SVB collapse."
+    )
+with about_right:
+    st.markdown(
+        "**Code**\n"
+        "  \nGitHub: *link forthcoming*\n\n"
+        "**Contact**\n"
+        "  \njared@kuroshioflow.io\n\n"
+        "**Methodology**\n"
+        "  \nSee [README.md](README.md) for the methodology summary, limitations, "
+        "and source citations (Fed SR letters, BIS IRRBB, FFIEC handbooks)."
+    )
+
+st.markdown("---")
 st.caption(
-    "**Data:** FFIEC Call Report bulk data — "
-    "https://cdr.ffiec.gov/public/PWS/DownloadBulkData.aspx. "
-    "**Source code & methodology:** see `README.md` in the repo. "
-    "**Limitations:** see the README's Limitations section — every modeling "
-    "assumption is explicit, configurable, and named."
+    "**Data sources:** FFIEC Call Report bulk data "
+    "(https://cdr.ffiec.gov/public/PWS/DownloadBulkData.aspx) and FRED "
+    "(https://fred.stlouisfed.org).  \n"
+    "**Methodology & limitations:** see `README.md` — every modeling assumption is "
+    "marked `# ASSUMPTION:` in source and configurable from the dashboard sliders.  \n"
+    "**License:** MIT. Code is portfolio-grade; not for production risk decisions."
 )
