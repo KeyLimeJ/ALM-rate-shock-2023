@@ -180,3 +180,54 @@ def test_portfolio_modified_duration_positive_for_normal_portfolio():
     buckets = {"secs_treasury_5y_15y": 1000.0}
     md = portfolio_modified_duration(buckets, _flat_curve(0.04), book_yield=0.02)
     assert 5.0 < md < 12.0  # 10-year midpoint, low coupon → MD roughly between 5 and 12
+
+
+# ---------------------------------------------------------------------------
+# Empty-input safety (regression: pre-fix this raised KeyError("fair_value"))
+# ---------------------------------------------------------------------------
+
+def test_reconstruct_portfolio_with_empty_buckets_has_expected_columns():
+    """An empty input must still produce a frame with the documented columns."""
+    recon = reconstruct_portfolio({}, _flat_curve(0.04), book_yield=0.02)
+    assert recon.empty
+    expected = {"field", "midpoint_years", "amortized_cost", "discount_rate",
+                "coupon", "fair_value", "unrealized_loss"}
+    assert expected.issubset(set(recon.columns))
+
+
+def test_reconstruct_portfolio_with_all_zero_balances_has_expected_columns():
+    """All-zero balances (e.g., stale data file) must not break downstream."""
+    buckets = {f: 0.0 for f, _ in RCB_BUCKETS}
+    recon = reconstruct_portfolio(buckets, _flat_curve(0.04), book_yield=0.02)
+    assert recon.empty
+    assert "fair_value" in recon.columns
+
+
+def test_portfolio_modified_duration_returns_nan_for_empty_input():
+    """Empty buckets must return NaN, not raise."""
+    md = portfolio_modified_duration({}, _flat_curve(0.04), book_yield=0.02)
+    assert pd.isna(md)
+
+
+def test_portfolio_modified_duration_returns_nan_for_all_zero_buckets():
+    md = portfolio_modified_duration(
+        {f: 0.0 for f, _ in RCB_BUCKETS},
+        _flat_curve(0.04),
+        book_yield=0.02,
+    )
+    assert pd.isna(md)
+
+
+def test_portfolio_modified_duration_returns_nan_for_empty_curve():
+    md = portfolio_modified_duration({"secs_treasury_5y_15y": 1000.0}, {}, 0.02)
+    assert pd.isna(md)
+
+
+def test_eve_shock_grid_with_empty_buckets_has_expected_columns():
+    """Empty buckets must produce a grid frame with zeroed deltas, not crash."""
+    grid = eve_shock_grid({}, _flat_curve(0.04), book_yield=0.02, shocks_bps=(100, 200))
+    assert len(grid) == 2
+    assert set(grid.columns) >= {"shock_bps", "delta_eve", "baseline_fair_value",
+                                  "shocked_fair_value", "amortized_cost"}
+    assert (grid["delta_eve"] == 0.0).all()
+    assert (grid["baseline_fair_value"] == 0.0).all()

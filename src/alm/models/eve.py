@@ -243,6 +243,8 @@ def reconstruct_portfolio(
     if midpoints:
         effective_midpoints.update(midpoints)
 
+    columns = ["field", "midpoint_years", "amortized_cost", "discount_rate",
+               "coupon", "fair_value", "unrealized_loss"]
     rows: list[dict[str, float]] = []
     for field, _ in RCB_BUCKETS:
         ac = buckets.get(field, 0.0)
@@ -261,7 +263,9 @@ def reconstruct_portfolio(
             "fair_value": fv,
             "unrealized_loss": ac - fv,
         })
-    return pd.DataFrame(rows)
+    # Return an empty frame WITH the expected columns when no buckets are
+    # populated — keeps downstream code from KeyError'ing on missing columns.
+    return pd.DataFrame(rows, columns=columns)
 
 
 def total_unrealized_loss(reconstruction: pd.DataFrame) -> float:
@@ -291,7 +295,7 @@ def eve_shock_grid(
         DataFrame: ``shock_bps, baseline_fv, shocked_fv, delta_eve``.
     """
     base = reconstruct_portfolio(buckets, baseline_curve, book_yield, midpoints)
-    base_fv = float(base["fair_value"].sum())
+    base_fv = float(base["fair_value"].sum())   # empty frame → 0.0 (no KeyError)
     base_ac = float(base["amortized_cost"].sum())
 
     rows: list[dict[str, float]] = []
@@ -308,7 +312,11 @@ def eve_shock_grid(
             "delta_eve": shocked_fv - base_fv,
             "unrealized_loss_at_shock": base_ac - shocked_fv,
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows,
+        columns=["shock_bps", "amortized_cost", "baseline_fair_value",
+                 "shocked_fair_value", "delta_eve", "unrealized_loss_at_shock"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -321,15 +329,23 @@ def portfolio_modified_duration(
     book_yield: float,
     bump_bps: int = 1,
 ) -> float:
-    """AC-weighted modified duration via small-shock numerical differentiation."""
+    """AC-weighted modified duration via small-shock numerical differentiation.
+
+    Returns NaN if the portfolio is empty or has no positive fair value
+    (e.g., when bucket data hasn't been loaded yet).
+    """
+    if not curve or not any(v > 0 for v in buckets.values()):
+        return float("nan")
     base = reconstruct_portfolio(buckets, curve, book_yield)
+    if base.empty:
+        return float("nan")
     base_fv = float(base["fair_value"].sum())
+    if base_fv <= 0:
+        return float("nan")
     bumped = reconstruct_portfolio(
         buckets, shift_curve(curve, bump_bps), book_yield
     )
     bumped_fv = float(bumped["fair_value"].sum())
-    if base_fv <= 0:
-        return float("nan")
     dy = bump_bps / 10_000.0
     return float(-(bumped_fv - base_fv) / (base_fv * dy))
 

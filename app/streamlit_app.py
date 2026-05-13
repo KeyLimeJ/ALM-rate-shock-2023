@@ -51,15 +51,20 @@ st.set_page_config(
 # Data load
 # ---------------------------------------------------------------------------
 @st.cache_data
-def load_data() -> pd.DataFrame | None:
-    path = PATHS.processed / "ffiec_long.parquet"
-    if not path.exists():
-        return None
-    df = pd.read_parquet(path)
+def _load_data_cached(_path: str, _mtime: float) -> pd.DataFrame:
+    """Cache keyed on file path + mtime — auto-invalidates when the parquet is re-pulled."""
+    df = pd.read_parquet(_path)
     rssd_to_bank = {b.rssd_id: b for b in banks.BANKS.values()}
     df["bank_short"] = df["rssd_id"].map(lambda r: rssd_to_bank[r].short_name)
     df["bank_role"] = df["rssd_id"].map(lambda r: rssd_to_bank[r].role)
     return df
+
+
+def load_data() -> pd.DataFrame | None:
+    path = PATHS.processed / "ffiec_long.parquet"
+    if not path.exists():
+        return None
+    return _load_data_cached(str(path), path.stat().st_mtime)
 
 
 df = load_data()
@@ -508,18 +513,35 @@ st.write(
 
 # Load FRED curve data
 @st.cache_data
+def _load_fred_cached(_path: str, _mtime: float) -> pd.DataFrame:
+    return pd.read_parquet(_path)
+
+
 def load_fred() -> pd.DataFrame | None:
     path = PATHS.processed / "fred_macro.parquet"
     if not path.exists():
         return None
-    return pd.read_parquet(path)
+    return _load_fred_cached(str(path), path.stat().st_mtime)
 
 
 fred_df = load_fred()
+
+# Detect whether the FFIEC parquet contains the M3-era bucket fields. If not,
+# the user is running with a stale data file and needs to re-pull.
+_required_bucket_fields = {"secs_treasury_le_3m", "secs_mbs_passthrough_gt_15y"}
+_have_buckets = _required_bucket_fields.issubset(set(df["field"].unique()))
+
 if fred_df is None:
     st.warning(
         "FRED data not found. Run `uv run python -m scripts.pull_fred "
         "--start 2021-01-01 --end 2023-01-15` to enable the M3 section."
+    )
+elif not _have_buckets:
+    st.warning(
+        "M3 needs the maturity-bucket fields from FFIEC Schedules RC-B / RC-C / RC-E "
+        "Memorandum items. Your `data/processed/ffiec_long.parquet` doesn't have them — "
+        "re-pull with:\n\n"
+        "```\nuv run python -m scripts.pull_ffiec --quarter 2022Q4 --quarter 2021Q4\n```"
     )
 else:
     # ===== Sensitivity controls =====
