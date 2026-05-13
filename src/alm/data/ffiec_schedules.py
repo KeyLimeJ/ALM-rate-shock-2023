@@ -67,15 +67,20 @@ SCHEDULES: dict[str, Schedule] = {
 # ---------------------------------------------------------------------------
 
 # Schedule RC — Balance Sheet
+# Several MDRM codes here were renumbered by FFIEC when Schedule RC was
+# restructured circa 2010-2011 and again when HTM disclosure changed. The
+# codes below are the live ones as of the FFIEC 031 form in use 2018-2023.
 FIELDS_RC: dict[str, str] = {
     # MDRM stem -> human-readable name
     "2170": "total_assets",
     "2200": "total_deposits",
     "3210": "total_equity_capital",
-    "0010": "cash_and_balances_due",
-    "1754": "htm_securities",      # Held-to-maturity securities, amortized cost
-    "1773": "afs_securities",      # Available-for-sale securities, fair value
-    "2122": "loans_and_leases_net",
+    "0081": "cash_noninterest_bearing",          # Item 1.a (replaces legacy 0010)
+    "0071": "cash_interest_bearing_balances",    # Item 1.b
+    "JJ34": "htm_securities",                    # Item 2.a (replaces legacy 1754 on RC)
+    "1773": "afs_securities",                    # Item 2.b
+    "B528": "loans_and_leases_net",              # Item 4.b (replaces legacy 2122)
+    "3123": "allowance_loan_losses",             # Item 4.c
 }
 
 # Schedule RC-B — Securities (HTM amortized cost + fair value, AFS amortized + fair)
@@ -89,13 +94,14 @@ FIELDS_RCB: dict[str, str] = {
 }
 
 # Schedule RC-E — Deposits
+# The deposit-insurance threshold moved from $100k to $250k in 2008 (Emergency
+# Economic Stabilization Act, made permanent by Dodd-Frank). Time-deposit
+# bucket codes were renumbered accordingly: J473 / J474 replaced 6648 / 2604.
 FIELDS_RCE: dict[str, str] = {
-    # Memo item: non-interest-bearing demand vs interest-bearing,
-    # plus total transaction / non-transaction / time deposits.
     "2215": "transaction_accounts_total",
     "2385": "nontransaction_savings_total",
-    "6648": "time_deposits_less_100k",   # legacy threshold
-    "2604": "time_deposits_100k_plus",
+    "J473": "time_deposits_less_250k",
+    "J474": "time_deposits_250k_plus",
 }
 
 # Schedule RC-O — Deposit insurance / uninsured deposits
@@ -104,10 +110,14 @@ FIELDS_RCO: dict[str, str] = {
 }
 
 # Schedule RC-R — Tier 1 Capital
+# Note: RC-R uses the RCFA / RCOA reporting series (regulatory capital), not
+# RCFD / RCON. The leverage ratio (7204) is reported as a percent string (e.g.
+# "7.2429%") which doesn't survive numeric coercion — compute it downstream as
+# tier1_capital / average_total_assets instead.
 FIELDS_RCR: dict[str, str] = {
-    "8274": "tier1_capital",            # Common Equity Tier 1 + Additional Tier 1 (legacy)
+    "8274": "tier1_capital",            # Tier 1 capital
     "P859": "common_equity_tier1",      # CET1 capital
-    "7204": "tier1_leverage_ratio",     # Tier 1 leverage ratio
+    "A224": "average_total_assets",     # Average total assets for leverage ratio
 }
 
 # Schedule RI — Income Statement
