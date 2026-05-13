@@ -69,11 +69,13 @@ uv run python -m scripts.pull_fred --start 2019-01-01 --end 2023-03-31
 
 Outputs land in `data/processed/` as parquet.
 
-### 4. Run the dashboard *(coming in M6)*
+### 4. Run the dashboard
 
 ```bash
 uv run streamlit run app/streamlit_app.py
 ```
+
+Then open http://localhost:8501 in your browser. The dashboard grows with each milestone — M1 shows the balance-sheet snapshot, HTM concentration, unrealized losses, and uninsured deposit %. Repricing-gap, NII, EVE, and liquidity overlays will appear as later milestones land.
 
 ---
 
