@@ -92,6 +92,36 @@ def test_find_bulk_zip_raises_helpful_message(tmp_path: Path):
     msg = str(exc.value)
     assert "12312022" in msg
     assert "cdr.ffiec.gov" in msg.lower()
+    assert "Five Periods" in msg     # advertises the bigger download option
+
+
+def test_find_bulk_zip_handles_multi_period_archive(tmp_path: Path):
+    """A 'Five Periods' ZIP whose filename mentions only one date should still be
+    findable for any quarter whose TSVs are inside it."""
+    columns = ["IDRSSD", "RCFD2170"]
+    descriptions = ["Bank ID", "Total assets"]
+    rows = [{"IDRSSD": "802866", "RCFD2170": "100000000"}]
+    rc_text = _make_schedule_text(rows, columns, descriptions)
+
+    # ZIP filename says 03312023, but it contains TSVs for 5 quarters
+    zip_path = tmp_path / "FFIEC CDR Call Bulk All Schedules Five Periods 03312023.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for token in ("03312023", "12312022", "09302022", "06302022", "03312022"):
+            zf.writestr(f"FFIEC CDR Call Schedule RC {token}.txt", rc_text)
+
+    # Filename-only would only find Q1 2023 — content-indexed finds all 5.
+    from alm.data.ffiec import _CONTENT_INDEX_CACHE
+    _CONTENT_INDEX_CACHE.clear()  # ensure no leakage from other tests
+
+    assert find_bulk_zip(tmp_path, Quarter(2023, 1)) == zip_path  # fast path (filename)
+    assert find_bulk_zip(tmp_path, Quarter(2022, 4)) == zip_path  # slow path (content)
+    assert find_bulk_zip(tmp_path, Quarter(2022, 3)) == zip_path
+    assert find_bulk_zip(tmp_path, Quarter(2022, 2)) == zip_path
+    assert find_bulk_zip(tmp_path, Quarter(2022, 1)) == zip_path
+
+    # A quarter NOT inside the archive should still raise cleanly
+    with pytest.raises(FileNotFoundError):
+        find_bulk_zip(tmp_path, Quarter(2021, 4))
 
 
 # ---------------------------------------------------------------------------

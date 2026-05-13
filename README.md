@@ -51,17 +51,34 @@ cp .env.example .env
 
 ### 3. Pull data
 
-FFIEC bulk ZIPs must be downloaded once from the public-data portal (it requires a license click-through, not scriptable). For each quarter you want to model:
+FFIEC bulk ZIPs must be downloaded from the public-data portal (it requires a license click-through, not scriptable). The portal offers two relevant report types:
+
+- **Single Period** — one quarter per ZIP. Fine for 1-2 quarters.
+- **Five Periods** — five consecutive quarters per ZIP. Use this if you want a multi-quarter time series; **four downloads cover the full 2019Q1–2023Q1 window**.
+
+Workflow for the full timeline (recommended):
 
 1. Visit https://cdr.ffiec.gov/public/PWS/DownloadBulkData.aspx
-2. Pick **"Call Reports -- Single Period"**, the quarter-end date, format **"Tab Delimited"**.
-3. Save the resulting ZIP into `data/raw/`. The filename will look like `FFIEC CDR Call Bulk All Schedules 12312022.zip`.
+2. Pick **"Call Reports -- Five Periods"**.
+3. Pick format **"Tab Delimited"**.
+4. Download for each of these end-dates (each gives you that quarter + the four prior):
+   - **03/31/2023** → covers 2022Q1, 2022Q2, 2022Q3, 2022Q4, 2023Q1
+   - **03/31/2022** → covers 2021Q1–2022Q1
+   - **03/31/2021** → covers 2020Q1–2021Q1
+   - **03/31/2020** → covers 2019Q1–2020Q1
+5. Drop all four ZIPs into `data/raw/`. The parser looks inside each ZIP and routes quarters automatically — no renaming needed.
 
 Then:
 
 ```bash
-# FFIEC: parse one or more quarters for SVB + Huntington
-uv run python -m scripts.pull_ffiec --quarter 2022Q4
+# FFIEC: parse every quarter from 2019Q1 through 2023Q1 (works with either
+# single-period or five-period ZIPs in data/raw/)
+uv run python -m scripts.pull_ffiec \
+  --quarter 2019Q1 --quarter 2019Q2 --quarter 2019Q3 --quarter 2019Q4 \
+  --quarter 2020Q1 --quarter 2020Q2 --quarter 2020Q3 --quarter 2020Q4 \
+  --quarter 2021Q1 --quarter 2021Q2 --quarter 2021Q3 --quarter 2021Q4 \
+  --quarter 2022Q1 --quarter 2022Q2 --quarter 2022Q3 --quarter 2022Q4 \
+  --quarter 2023Q1
 
 # FRED: pull the Treasury curve and policy rates
 uv run python -m scripts.pull_fred --start 2019-01-01 --end 2023-03-31

@@ -85,29 +85,81 @@ class Quarter:
 # Path resolution
 # ---------------------------------------------------------------------------
 
-# ASSUMPTION: FFIEC bulk ZIPs are named "FFIEC CDR Call Bulk All Schedules
-# MMDDYYYY.zip". They may also appear as "...Subset of Schedules..." — we
-# accept any filename containing "Call" and the MMDDYYYY token.
+# ASSUMPTION: FFIEC bulk ZIPs are named like "FFIEC CDR Call Bulk All Schedules
+# MMDDYYYY.zip" (single-period) or "FFIEC CDR Call Bulk All Schedules Five
+# Periods MMDDYYYY.zip" (multi-period). The single-period file's filename
+# contains the date token; the five-period file contains TSVs for five
+# distinct dates inside the same archive. We accept either: first look for a
+# ZIP whose *filename* contains the date token (fast path), then fall back to
+# inspecting each ZIP's *contents* (slow path, cached after first scan).
+_CONTENT_INDEX_CACHE: dict[Path, dict[str, Path]] = {}
+
+
+def _index_raw_dir_by_date(raw_dir: Path) -> dict[str, Path]:
+    """Build a mapping from MMDDYYYY token → ZIP path for ZIPs in ``raw_dir``.
+
+    Opens each Call Report ZIP once and inspects its members. Caches the
+    result per directory so subsequent lookups are O(1).
+    """
+    if raw_dir in _CONTENT_INDEX_CACHE:
+        return _CONTENT_INDEX_CACHE[raw_dir]
+
+    token_to_zip: dict[str, Path] = {}
+    for p in sorted(raw_dir.glob("*.zip")):
+        if "Call" not in p.name:
+            continue
+        try:
+            with zipfile.ZipFile(p) as zf:
+                # Tokens that appear in any TSV's filename
+                for name in zf.namelist():
+                    if not name.lower().endswith(".txt"):
+                        continue
+                    # MMDDYYYY tokens are 8 contiguous digits at quarter ends
+                    for chunk in name.replace(".", " ").split():
+                        if len(chunk) == 8 and chunk.isdigit() and chunk[:2] in {"03", "06", "09", "12"}:
+                            token_to_zip.setdefault(chunk, p)
+        except zipfile.BadZipFile:
+            log.warning("Skipping malformed ZIP: %s", p.name)
+            continue
+    _CONTENT_INDEX_CACHE[raw_dir] = token_to_zip
+    return token_to_zip
+
+
 def find_bulk_zip(raw_dir: Path, quarter: Quarter) -> Path:
-    """Locate the bulk Call Report ZIP for a given quarter in ``raw_dir``."""
+    """Locate the bulk Call Report ZIP that holds a given quarter's data.
+
+    First tries filename matching (single-period ZIPs). If no filename
+    matches, falls back to content-indexing every Call Report ZIP in the
+    directory (handles "Five Periods" ZIPs that bundle 5 quarters per file).
+    """
     token = quarter.filename_token
-    candidates = [
+
+    # Fast path: filename contains the date token
+    by_name = [
         p for p in raw_dir.glob("*.zip")
         if "Call" in p.name and token in p.name
     ]
-    if not candidates:
-        msg = (
-            f"No FFIEC Call Report bulk ZIP found for {quarter.label} in {raw_dir}.\n"
-            f"Expected a file whose name contains 'Call' and '{token}'.\n"
-            f"Download manually from:\n"
-            f"  https://cdr.ffiec.gov/public/PWS/DownloadBulkData.aspx\n"
-            f"Choose 'Call Reports -- Single Period', period {quarter.end_date.strftime('%m/%d/%Y')},\n"
-            f"format 'Tab Delimited', and drop the ZIP into {raw_dir}."
-        )
-        raise FileNotFoundError(msg)
-    if len(candidates) > 1:
-        log.warning("Multiple matching ZIPs for %s; using %s", quarter.label, candidates[0].name)
-    return candidates[0]
+    if by_name:
+        if len(by_name) > 1:
+            log.warning("Multiple ZIPs match %s by name; using %s",
+                        quarter.label, by_name[0].name)
+        return by_name[0]
+
+    # Slow path: scan contents (covers Five-Period ZIPs)
+    by_content = _index_raw_dir_by_date(raw_dir)
+    if token in by_content:
+        return by_content[token]
+
+    msg = (
+        f"No FFIEC Call Report bulk ZIP found for {quarter.label} in {raw_dir}.\n"
+        f"Expected a single-period ZIP whose filename contains '{token}', or a "
+        f"multi-period ZIP whose contents include TSVs for {token}.\n\n"
+        f"Download from https://cdr.ffiec.gov/public/PWS/DownloadBulkData.aspx — "
+        f"either 'Call Reports -- Single Period' for {quarter.end_date.strftime('%m/%d/%Y')}, "
+        f"or 'Call Reports -- Five Periods' ending on a date that includes {quarter.label}.\n"
+        f"Drop the ZIP into {raw_dir} and re-run."
+    )
+    raise FileNotFoundError(msg)
 
 
 # ---------------------------------------------------------------------------
